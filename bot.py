@@ -51,12 +51,12 @@ async def get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id=chat_id, text="Downloading...")
     try:
-        buffer, title = download_video(video_url)
+        buffer, title, ext = download_video(video_url)
         buffer.seek(0)
         await context.bot.send_video(
             chat_id=update.effective_chat.id,
             video=buffer,
-            filename=f"{title}.mp4",
+            filename=f"{title}.{ext}",
             supports_streaming=True
         )
         buffer.close()
