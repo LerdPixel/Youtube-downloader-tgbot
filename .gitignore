@@ -1,1 +1,6 @@
 .env
+.venv-web/
+downloads-web/
+__pycache__/
+*.pyc
+yt_cookies.txt
