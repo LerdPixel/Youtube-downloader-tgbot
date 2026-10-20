@@ -1,5 +1,7 @@
+import { partitionDownloads, downloadActivities } from './downloads.mjs';
+
 const $ = (id) => document.getElementById(id);
-const state = { info: null, health: null, analysis: null, analysisId: 0, jobs: [], jobsKey: '', toastTimer: null, estimateTimer: null, estimateRequest: null, estimateId: 0, playlistSelected: new Set(), playlistVisible: 100, downloading: false };
+const state = { info: null, health: null, analysis: null, analysisId: 0, jobs: [], jobsKey: '', toastTimer: null, estimateTimer: null, estimateRequest: null, estimateId: 0, playlistSelected: new Set(), playlistVisible: 100, downloading: false, downloadsScope: null, modalLimits: {active:100, complete:100, failed:100}, tooltipRow: null };
 const modes = { video: 'Видео со звуком', audio: 'Только аудио', silent: 'Видео без звука' };
 const mode = () => document.querySelector('input[name="mode"]:checked').value;
 const active = (job) => ['queued', 'downloading', 'processing'].includes(job.status);
@@ -324,96 +326,200 @@ $('download-form').addEventListener('submit', async event => {
   if (!$('url').value.trim()) { errorAt('download-error','Сначала вставьте ссылку на видео.'); $('url').focus(); return; }
   state.downloading = true;
   updatePlaylistSelection();
+  let openedBatch = null;
   try {
     if (state.info?.kind === 'playlist') {
       const result = await api('/api/playlists/download',{method:'POST',body:JSON.stringify({analysis_id:state.info.analysis_id, settings:settings(), entry_indices:[...state.playlistSelected]})});
+      openedBatch = result.batch_id;
       toast(`В очередь добавлено видео: ${result.count}`);
     } else {
       await api('/api/jobs', {method:'POST', body:JSON.stringify(settings())});
       toast('Загрузка добавлена в очередь');
     }
     await pollJobs();
+    if (openedBatch) openDownloads(openedBatch);
   } catch (error) { errorAt('download-error',error.message); }
   finally { state.downloading = false; updatePlaylistSelection(); }
 });
 
 function renderJobs() {
-  const list = $('jobs-list');
-  $('jobs-count').textContent = state.jobs.length;
-  $('nav-count').textContent = state.jobs.filter(active).length || state.jobs.length;
-  const completedFiles = state.jobs.filter(job => job.status === 'complete').flatMap(job => job.files || []);
-  const totalBytes = completedFiles.reduce((total, file) => total + (Number.isFinite(file.size) ? file.size : 0), 0);
+  const activities = downloadActivities(state.jobs);
+  $('jobs-count').textContent = activities.length;
+  $('nav-count').textContent = state.jobs.filter(active).length || activities.length;
+  const files = state.jobs.filter(job => job.status === 'complete').flatMap(job => job.files || []);
+  const totalBytes = files.reduce((sum,file) => sum + (Number.isFinite(file.size) ? file.size : 0),0);
   $('downloaded-size').textContent = bytes(totalBytes);
   $('downloaded-size').title = `${totalBytes.toLocaleString('ru-RU')} байт`;
-  $('downloaded-files').textContent = completedFiles.length;
-  if (!state.jobs.length) return;
+  $('downloaded-files').textContent = files.length;
+  const list = $('jobs-list');
   list.replaceChildren();
-  const batches = new Map();
-  for (const job of state.jobs) if (job.batch_id) {
-    if (!batches.has(job.batch_id)) batches.set(job.batch_id,[]);
-    batches.get(job.batch_id).push(job);
-  }
-  for (const [id,jobs] of batches) {
-    const batch = node('div','playlist-batch');
-    batch.append(node('strong','',jobs[0].playlist_title),node('p','',`Готово ${jobs.filter(job => job.status === 'complete').length} из ${jobs.length} · ошибок ${jobs.filter(job => job.status === 'failed').length} · в очереди и обработке ${jobs.filter(active).length}`));
-    if (jobs.some(active)) {
-      const cancel = node('button','text-button','Отменить весь плейлист'); cancel.type = 'button';
-      cancel.addEventListener('click',async () => { cancel.disabled = true; try { await api(`/api/batches/${id}/cancel`,{method:'POST',body:'{}'}); await pollJobs(); } catch(error) { toast(error.message); cancel.disabled = false; } });
-      batch.append(cancel);
-    }
-    list.append(batch);
-  }
-  const ordered = [...state.jobs.filter(active).reverse(), ...state.jobs.filter(job => !active(job))];
-  for (const job of ordered) {
-    const card = node('article','job-card');
-    const top = node('div','job-top'), jobIcon = node('div','job-icon'), titleBlock = node('div');
-    jobIcon.append(icon(job.mode === 'audio' ? 'music' : job.mode === 'silent' ? 'muted' : 'video'));
-    titleBlock.append(node('h3','job-title',job.title), node('p','job-preset',job.preset));
-    top.append(jobIcon,titleBlock); card.append(top);
-    if (job.playlist_title) card.append(node('p','job-preset',`${job.playlist_index}. ${job.playlist_title}`));
-    const status = node('div',`job-status ${job.status}`);
-    status.append(node('span','',job.phase), node('span','',active(job) && Number.isFinite(job.percent) ? `${job.percent}%` : job.status === 'complete' ? '✓' : ''));
-    card.append(status);
-    if (active(job)) {
-      const track = node('div','progress-track'), fill = node('div',`progress-fill${job.percent === null ? ' indeterminate' : ''}`);
-      if (job.percent !== null) fill.style.width = `${job.percent}%`;
-      track.append(fill);card.append(track);
-      const stats = node('div','job-stats');
-      stats.append(node('span','', `${bytes(job.downloaded)}${job.total ? ' / ' + bytes(job.total) : ''}`), node('span','',job.speed ? `${bytes(job.speed)}/с · ${duration(job.eta)}` : job.status === 'processing' ? 'Обработка…' : ''));
-      card.append(stats);
-    }
-    if (job.error) card.append(node('p','job-error', job.error));
-    if (job.storage_error) card.append(node('p','job-error', job.storage_error));
-    if (job.warnings?.length) { const details = node('details','job-warning'); details.append(node('summary','',`Замечания загрузчика (${job.warnings.length})`), node('p','job-error',job.warnings.join('\n'))); card.append(details); }
-    const actions = node('div','job-actions');
-    if (active(job)) {
-      const cancel = node('button','cancel','Отменить'); cancel.type = 'button';
-      cancel.disabled = job.phase === 'Сохраняем в Загрузки';
-      cancel.addEventListener('click',async () => { cancel.disabled = true; try { await api(`/api/jobs/${job.id}/cancel`,{method:'POST',body:'{}'}); await pollJobs(); } catch(error) { toast(error.message); cancel.disabled = false; } });
-      actions.append(cancel);
-    }
-    if (['failed','cancelled','interrupted'].includes(job.status)) {
-      const retry = node('button','','Вставить ссылку'); retry.type = 'button';
-      retry.addEventListener('click', () => { $('url').value = job.url; invalidateAnalysis(); $('url').focus(); $('url').scrollIntoView({block:'center'}); toast('Ссылка вставлена. Выберите настройки и скачайте снова.'); });
-      actions.append(retry);
-    }
-    if (job.status === 'complete') {
-      const jobBytes = job.files.reduce((total, file) => total + (Number.isFinite(file.size) ? file.size : 0), 0);
-      card.append(node('p','job-volume',`Общий объём: ${bytes(jobBytes)} · файлов: ${job.files.length}`));
-      if (job.saved_dir) card.append(node('p','job-preset',job.storage_error ? 'Файлы уже в папке Загрузки' : 'Уже в папке Загрузки · временные файлы очищены'));
-      const files = node('div','job-files');
-      for (const file of job.files) {
-        const link = node('a','file-link', `${file.name} · ${bytes(file.size)}`);
-        link.href = `/api/jobs/${job.id}/files/${encodeURIComponent(file.name)}`; link.download = file.name; link.title = `Скачать ещё одну копию ${file.name}`;
-        files.append(link);
-      }
-      if (job.files.length > 1) { const bundle = node('a','file-link','Скачать копию архивом .zip ↓'); bundle.href = `/api/jobs/${job.id}/bundle`; bundle.download = ''; actions.append(bundle); }
-      card.append(files);
-    }
-    if (actions.children.length) card.append(actions);
+  if (!activities.length) list.append(node('p','recent-empty','Здесь появятся три последние загрузки.'));
+  for (const activity of activities.slice(0,3)) {
+    const card = node('button','recent-download'); card.type = 'button';
+    card.setAttribute('aria-haspopup','dialog');
+    card.title = activity.title;
+    const mark = node('span','recent-mark'); mark.append(icon(activity.batchId ? 'folder' : activity.jobs[0].mode === 'audio' ? 'music' : 'video'));
+    const text = node('span','recent-copy');
+    text.append(node('strong','',activity.title));
+    const columns = partitionDownloads(activity.jobs);
+    text.append(node('span','',activity.batchId ? `Плейлист · ${activity.jobs.length} видео · готово ${columns.complete.length}`
+      : activity.jobs[0].phase));
+    card.append(mark,text,node('span','recent-arrow','↗'));
+    card.addEventListener('click',() => openDownloads(activity.batchId));
     list.append(card);
   }
+  renderDownloadsDialog();
 }
+
+function openDownloads(batchId = null) {
+  state.downloadsScope = batchId;
+  state.modalLimits = {active:100,complete:100,failed:100};
+  hideDownloadTooltip();
+  if (!$('downloads-dialog').open) $('downloads-dialog').showModal();
+  document.body.classList.add('dialog-open');
+  renderDownloadsDialog();
+}
+
+function hideDownloadTooltip() {
+  state.tooltipRow?.removeAttribute('aria-describedby');
+  state.tooltipRow = null;
+  $('download-tooltip').hidden = true;
+}
+
+function showDownloadTooltip(row) {
+  const job = state.jobs.find(item => item.id === row.dataset.jobId);
+  if (!job) return;
+  if (state.tooltipRow !== row) hideDownloadTooltip();
+  state.tooltipRow = row;
+  row.setAttribute('aria-describedby','download-tooltip');
+  const lines = [job.title,job.preset,job.playlist_title ? `${job.playlist_index}. ${job.playlist_title}` : '',job.phase];
+  if (active(job)) lines.push(`${bytes(job.downloaded)}${job.total ? ' / ' + bytes(job.total) : ''}${job.speed ? ' · ' + bytes(job.speed) + '/с' : ''}${Number.isFinite(job.eta) ? ' · осталось ' + duration(job.eta) : ''}`);
+  for (const file of (job.files || []).slice(0,5)) lines.push(`${file.name} · ${bytes(file.size)}`);
+  if (job.files?.length > 5) lines.push(`Ещё файлов: ${job.files.length-5}`);
+  if (job.saved_dir) lines.push(`Сохранено: ${job.saved_dir}`);
+  if (job.error) lines.push(job.error.slice(0,1500));
+  if (job.storage_error) lines.push(job.storage_error);
+  if (job.warnings?.length) lines.push(job.warnings.join('\n').slice(0,1000));
+  const tooltip = $('download-tooltip');
+  tooltip.textContent = lines.filter(Boolean).join('\n');
+  tooltip.hidden = false;
+  const rect = row.getBoundingClientRect(), tip = tooltip.getBoundingClientRect();
+  tooltip.style.left = `${Math.max(12,Math.min(rect.left,window.innerWidth-tip.width-12))}px`;
+  tooltip.style.top = `${Math.max(12,rect.bottom+tip.height+10 > window.innerHeight ? rect.top-tip.height-8 : rect.bottom+8)}px`;
+}
+
+function createDownloadRow(job) {
+  const row = node('div','download-row'); row.tabIndex = 0; row.dataset.jobId = job.id;
+  row.append(node('span','download-row-title'),node('span','download-row-status'),node('span','download-row-actions'));
+  row.addEventListener('pointerenter',() => showDownloadTooltip(row));
+  row.addEventListener('pointerleave',hideDownloadTooltip);
+  row.addEventListener('focusin',() => showDownloadTooltip(row));
+  row.addEventListener('focusout',event => { if (!row.contains(event.relatedTarget)) hideDownloadTooltip(); });
+  return row;
+}
+
+function updateDownloadRow(row,job) {
+  const title = `${state.downloadsScope !== null && job.playlist_index ? job.playlist_index + '. ' : ''}${job.title}`;
+  if (row.querySelector('.download-row-title').textContent !== title) row.querySelector('.download-row-title').textContent = title;
+  row.querySelector('.download-row-status').textContent = job.status === 'complete' ? '✓' : active(job)
+    ? job.status === 'queued' ? '…' : Number.isFinite(job.percent) ? `${job.percent}%` : '⋯'
+    : job.status === 'cancelled' || job.status === 'interrupted' ? '×' : '!';
+  const action = active(job) ? 'cancel' : job.status === 'complete' && job.files?.length ? 'file' : 'retry';
+  const actions = row.querySelector('.download-row-actions');
+  if (row.dataset.action !== action) {
+    row.dataset.action = action;
+    actions.replaceChildren();
+    if (action === 'file') {
+      const link = node('a','row-action','↓');
+      link.href = job.files.length > 1 ? `/api/jobs/${job.id}/bundle` : `/api/jobs/${job.id}/files/${encodeURIComponent(job.files[0].name)}`;
+      link.download = '';
+      link.title = job.files.length > 1 ? 'Скачать копию всех файлов в ZIP' : 'Скачать дополнительную копию';
+      link.setAttribute('aria-label',`Скачать копию: ${job.title}`);
+      actions.append(link);
+    } else {
+      const button = node('button','row-action',action === 'cancel' ? '×' : '↗'); button.type = 'button';
+      button.setAttribute('aria-label',`${action === 'cancel' ? 'Отменить' : 'Вставить ссылку'}: ${job.title}`);
+      button.addEventListener('click',async () => {
+        if (action === 'retry') {
+          $('downloads-dialog').close();
+          $('url').value = job.url; invalidateAnalysis(); $('url').focus();
+          $('url').scrollIntoView({block:'center'});
+          toast('Ссылка вставлена. Выберите настройки и скачайте снова.');
+          return;
+        }
+        button.disabled = true;
+        try { await api(`/api/jobs/${job.id}/cancel`,{method:'POST',body:'{}'}); await pollJobs(); }
+        catch(error) { toast(error.message); button.disabled = false; }
+      });
+      actions.append(button);
+    }
+  }
+  const cancel = action === 'cancel' && actions.querySelector('button');
+  if (cancel) cancel.disabled = job.phase === 'Сохраняем в Загрузки';
+}
+
+function renderDownloadsDialog() {
+  if (!$('downloads-dialog').open) return;
+  const scope = state.downloadsScope;
+  const columns = partitionDownloads(state.jobs,scope);
+  const jobs = Object.values(columns).flat();
+  $('downloads-dialog-kind').textContent = scope === null ? 'ИСТОРИЯ ЗАГРУЗОК' : 'ЗАГРУЗКА ПЛЕЙЛИСТА';
+  $('downloads-dialog-title').textContent = scope === null ? 'Все загрузки' : jobs[0]?.playlist_title || 'Плейлист';
+  const savedBytes = columns.complete.flatMap(job => job.files || []).reduce((sum,file) => sum+(Number.isFinite(file.size) ? file.size : 0),0);
+  $('downloads-dialog-summary').textContent = `${jobs.length} загрузок · сохранено ${bytes(savedBytes)}`;
+  $('cancel-download-batch').hidden = scope === null || !columns.active.length;
+  const focusedId = document.activeElement?.closest('.download-row')?.dataset.jobId;
+  for (const [key,items] of Object.entries(columns)) {
+    const list = $(`column-${key}-list`), shown = items.slice(0,state.modalLimits[key]);
+    $(`column-${key}-count`).textContent = items.length;
+    $(`column-${key}-empty`).hidden = items.length !== 0;
+    $(`column-${key}-more`).hidden = shown.length === items.length;
+    const existing = new Map([...list.children].map(row => [row.dataset.jobId,row]));
+    const keep = new Set(shown.map(job => job.id));
+    for (const row of [...list.children]) if (!keep.has(row.dataset.jobId)) row.remove();
+    let cursor = list.firstElementChild;
+    for (const job of shown) {
+      const row = existing.get(job.id) || createDownloadRow(job);
+      updateDownloadRow(row,job);
+      if (row !== cursor) list.insertBefore(row,cursor);
+      cursor = row.nextElementSibling;
+    }
+  }
+  if (focusedId && !document.activeElement?.closest('.download-row')) {
+    const target = [...$('downloads-dialog').querySelectorAll('.download-row')].find(row => row.dataset.jobId === focusedId);
+    target?.focus({preventScroll:true});
+  }
+  if (state.tooltipRow?.isConnected) showDownloadTooltip(state.tooltipRow);
+  else hideDownloadTooltip();
+}
+
+$('open-downloads').addEventListener('click',() => openDownloads());
+$('open-download-history').addEventListener('click',() => openDownloads());
+$('downloads').addEventListener('click',event => { if (!event.target.closest('button,a')) openDownloads(); });
+const historyNavigation = document.querySelector('a[href="#downloads"]');
+historyNavigation.addEventListener('click',event => { event.preventDefault(); openDownloads(); });
+$('close-downloads').addEventListener('click',() => $('downloads-dialog').close());
+$('downloads-dialog').addEventListener('close',() => { hideDownloadTooltip(); document.body.classList.remove('dialog-open'); });
+$('downloads-dialog').addEventListener('cancel',hideDownloadTooltip);
+$('downloads-dialog').addEventListener('keydown',event => { if (event.key === 'Escape' && !$('download-tooltip').hidden) { event.preventDefault(); hideDownloadTooltip(); } });
+$('downloads-dialog').addEventListener('click',event => {
+  if (event.target !== $('downloads-dialog')) return;
+  const rect = $('downloads-dialog').getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('downloads-dialog').close();
+});
+for (const key of ['active','complete','failed']) {
+  $(`column-${key}-more`).addEventListener('click',() => { state.modalLimits[key] += 100; renderDownloadsDialog(); });
+  $(`column-${key}-list`).addEventListener('scroll',hideDownloadTooltip,{passive:true});
+}
+$('cancel-download-batch').addEventListener('click',async () => {
+  const batchId = state.downloadsScope;
+  if (batchId === null) return;
+  $('cancel-download-batch').disabled = true;
+  try { await api(`/api/batches/${batchId}/cancel`,{method:'POST',body:'{}'}); await pollJobs(); }
+  catch(error) { toast(error.message); }
+  finally { $('cancel-download-batch').disabled = false; }
+});
+window.addEventListener('resize',hideDownloadTooltip);
 
 let polling = false;
 async function pollJobs() {
@@ -471,8 +577,10 @@ async function init() {
     $('yt-version').textContent = `yt-dlp ${state.health.version}`;
     if (state.health.cookies_available) $('cookies').value = 'yt_cookies.txt';
     const healthy = state.health.ffmpeg && state.health.ffprobe && state.health.runtimes.length;
-    $('system-status').classList.toggle('warning', !healthy);
-    $('system-status').replaceChildren(node('span','status-dot'), document.createTextNode(!state.health.ffmpeg || !state.health.ffprobe ? 'Нужен ffmpeg / ffprobe' : !state.health.runtimes.length ? 'Рекомендуется Node.js / Deno' : 'Локально · всё готово'));
+    const currentServer = state.health.features?.playlists === true;
+    $('server-version-warning').hidden = currentServer;
+    $('system-status').classList.toggle('warning', !healthy || !currentServer);
+    $('system-status').replaceChildren(node('span','status-dot'), document.createTextNode(!currentServer ? 'Нужен перезапуск сервера' : !state.health.ffmpeg || !state.health.ffprobe ? 'Нужен ffmpeg / ffprobe' : !state.health.runtimes.length ? 'Рекомендуется Node.js / Deno' : 'Локально · всё готово'));
     if (!state.health.ffmpeg || !state.health.ffprobe) errorAt('download-error','Для скачивания и конвертации установите ffmpeg (включая ffprobe), затем перезапустите приложение.');
   } catch(error) { $('system-status').textContent = 'Сервер недоступен'; errorAt('source-error',error.message); }
   await pollJobs();

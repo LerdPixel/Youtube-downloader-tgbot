@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f5f6f2">
   <title>YouTube Local — ваши видео, ваши настройки</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=20261020">
+  <script type="module" src="/static/app.js?v=20261020"></script>
 </head>
 <body>
 <svg class="icon-defs" aria-hidden="true"><defs>
@@ -30,6 +30,7 @@
 </aside>
 <main id="workspace">
   <header class="topbar"><span>Медиа / Загрузчик</span><div class="system-status" id="system-status"><span class="status-dot"></span>Проверяем окружение…</div></header>
+  <div id="server-version-warning" class="error-message" role="alert" hidden>Запущена старая версия сервера без поддержки плейлистов. В его терминале нажмите Ctrl+C, выполните ./start_web.command и обновите эту страницу.</div>
   <section class="hero"><div><p class="eyebrow">МЕНЬШЕ ОГРАНИЧЕНИЙ. БОЛЬШЕ ВЫБОРА.</p><h1>YouTube → <span>в ваши файлы.</span></h1><p class="hero-description">Видео, музыка или отдельный фрагмент. В том качестве, которое нужно вам.</p></div><div class="hero-stamp" aria-hidden="true"><svg><use href="#i-download"/></svg><span>СОХРАНИТЬ<br>СЕБЕ</span></div></section>
   <section class="source-card" aria-labelledby="source-heading">
     <div class="section-heading"><h2 id="source-heading"><span class="step">01</span>Начните со ссылки</h2><span class="small-note">YouTube · Shorts · Music · Плейлисты</span></div>
@@ -61,10 +62,28 @@
         <div id="download-error" class="error-message" role="alert" hidden></div>
       </form>
     </section>
-    <aside class="downloads-panel" id="downloads" aria-labelledby="downloads-heading"><div class="section-heading"><h2 id="downloads-heading">Загрузки<span id="jobs-count" class="count">0</span></h2><span class="small-note">ОЧЕРЕДЬ</span></div><div class="volume-summary"><div><span>Скачано всего</span><strong id="downloaded-size">0 Б</strong></div><div><span>Файлов</span><strong id="downloaded-files">0</strong></div><p>По истории завершённых загрузок, включая файлы, позже удалённые вручную.</p></div><div id="jobs-error" class="error-message" role="alert" hidden></div><div id="jobs-list" aria-live="polite"><div class="empty-downloads"><div class="empty-icon"><svg><use href="#i-folder"/></svg></div><h3>Здесь будут ваши файлы</h3><p>Добавьте ссылку, выберите настройки и нажмите «Скачать».</p><div class="empty-line"></div><span>Без лимита Telegram на размер</span></div></div><div class="storage-note"><svg><use href="#i-folder"/></svg><div><strong>Папка сохранения</strong><code id="download-dir">~/Downloads/</code><p>Готовые файлы автоматически сохраняются в Загрузки. Временные файлы очищаются, история остаётся. Ссылки в истории скачивают дополнительную копию.</p></div></div></aside>
+    <aside class="downloads-panel recent-panel" id="downloads" aria-labelledby="downloads-heading">
+      <div class="section-heading"><h2 id="downloads-heading">Последние загрузки<span id="jobs-count" class="count">0</span></h2><button id="open-downloads" type="button" class="text-button" aria-haspopup="dialog">Все ↗</button></div>
+      <div class="volume-summary"><div><span>Скачано всего</span><strong id="downloaded-size">0 Б</strong></div><div><span>Файлов</span><strong id="downloaded-files">0</strong></div><p>По истории завершённых загрузок, включая файлы, позже удалённые вручную.</p></div>
+      <div id="jobs-error" class="error-message" role="alert" hidden></div>
+      <div id="jobs-list"><p class="recent-empty">Здесь появятся три последние загрузки.</p></div>
+      <button id="open-download-history" class="history-link" type="button" aria-haspopup="dialog">Открыть историю загрузок <span>↗</span></button>
+      <div class="storage-note"><svg><use href="#i-folder"/></svg><div><strong>Сохраняем в Загрузки</strong><code id="download-dir">~/Downloads/</code></div></div>
+    </aside>
   </div>
   <footer class="page-footer"><span>Создано для ваших файлов.</span><span>Локальное приложение · <span id="yt-version">yt-dlp</span></span></footer>
 </main>
+<dialog id="downloads-dialog" class="downloads-dialog" aria-labelledby="downloads-dialog-title" aria-describedby="downloads-dialog-note">
+  <header class="modal-header"><div><p id="downloads-dialog-kind" class="eyebrow">ИСТОРИЯ ЗАГРУЗОК</p><h2 id="downloads-dialog-title">Все загрузки</h2><p id="downloads-dialog-note">Подробности — при наведении или фокусе на названии.</p></div><button id="close-downloads" type="button" class="modal-close" aria-label="Закрыть окно загрузок" autofocus>×</button></header>
+  <div class="modal-toolbar"><span id="downloads-dialog-summary"></span><button id="cancel-download-batch" class="text-button" type="button" hidden>Отменить весь плейлист</button></div>
+  <div class="download-columns">
+    <section class="download-column column-active" aria-labelledby="column-active-title"><h3 id="column-active-title"><span class="column-dot"></span>Скачиваются<span id="column-active-count" class="column-count">0</span></h3><div id="column-active-list" class="download-rows" tabindex="0" role="region" aria-label="Скачиваются: список загрузок"></div><p id="column-active-empty" class="column-empty">Текущих загрузок нет</p><button id="column-active-more" class="text-button column-more" type="button" hidden>Показать ещё 100</button></section>
+    <section class="download-column column-complete" aria-labelledby="column-complete-title"><h3 id="column-complete-title"><span class="column-dot"></span>Скачались<span id="column-complete-count" class="column-count">0</span></h3><div id="column-complete-list" class="download-rows" tabindex="0" role="region" aria-label="Скачались: список загрузок"></div><p id="column-complete-empty" class="column-empty">Готовые файлы появятся здесь</p><button id="column-complete-more" class="text-button column-more" type="button" hidden>Показать ещё 100</button></section>
+    <section class="download-column column-failed" aria-labelledby="column-failed-title"><h3 id="column-failed-title"><span class="column-dot"></span>Ошибки<span id="column-failed-count" class="column-count">0</span></h3><div id="column-failed-list" class="download-rows" tabindex="0" role="region" aria-label="Ошибки: список загрузок"></div><p id="column-failed-empty" class="column-empty">Ошибок нет</p><button id="column-failed-more" class="text-button column-more" type="button" hidden>Показать ещё 100</button></section>
+  </div>
+  <footer class="modal-footer">Файлы уже сохраняются в Загрузки. Кнопка ↓ скачивает дополнительную копию. Отменённые и прерванные загрузки находятся в списке ошибок.</footer>
+<div id="download-tooltip" class="download-tooltip" role="tooltip" hidden></div>
+</dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

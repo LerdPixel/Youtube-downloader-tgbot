@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from pydantic import ValidationError
 
 from fastapi.testclient import TestClient
 
@@ -45,6 +46,17 @@ class PlaylistAnalysisTests(unittest.TestCase):
         self.assertIn("--yes-playlist",command)
         self.assertNotIn("--no-playlist",command)
         self.assertEqual(result["kind"],"playlist")
+
+    def test_music_links_use_standard_playlist_extractor(self):
+        with patch("web_app.server.subprocess.run",return_value=subprocess.CompletedProcess([],0,json.dumps(RAW),"")) as run:
+            result = inspect_video(Source(url="https://music.youtube.com/playlist?list=PL_test&si=share-code"))
+        self.assertEqual(run.call_args.args[0][-1],URL)
+        self.assertEqual(result["available_count"],2)
+
+    def test_missing_playlist_id_explains_incomplete_link(self):
+        for url in ("https://music.youtube.com/playlist?list=", "https://youtube.com/playlist"):
+            with self.subTest(url=url),self.assertRaisesRegex(ValidationError,"идентификатор после list="):
+                Source(url=url)
 
     def test_empty_and_too_large_playlists(self):
         with self.assertRaises(ValueError):

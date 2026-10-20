@@ -95,6 +95,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.client.get("/").status_code, 200)
         self.assertIn("YouTube Local", self.client.get("/").text)
         self.assertIn("version", self.client.get("/api/health").json())
+        self.assertTrue(self.client.get("/api/health").json()["features"]["playlists"])
         self.assertEqual(self.client.get("/api/health").json()["download_dir"],str((Path(self.directory.name)/"Downloads").resolve()))
         self.assertEqual(self.client.get("/api/jobs").json(), [])
         self.assertEqual(self.client.get("/.env").status_code, 404)

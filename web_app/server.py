@@ -20,7 +20,7 @@ from yt_dlp.version import __version__
 from pydantic import BaseModel, Field
 
 from .jobs import JobManager
-from .options import ROOT, Source, DownloadSettings, runtime_options, readable_error, is_playlist_url, MAX_PLAYLIST_ITEMS
+from .options import ROOT, Source, DownloadSettings, runtime_options, readable_error, is_playlist_url, canonical_playlist_url, MAX_PLAYLIST_ITEMS
 from .size_estimate import estimate_size
 from .playlists import normalize_playlist
 
@@ -52,7 +52,8 @@ def inspect_video(source: Source) -> dict:
     if source.proxy:
         command += ["--proxy", source.proxy]
     try:
-        result = subprocess.run(command + ["--", source.url], capture_output=True, text=True,
+        target_url = canonical_playlist_url(source.url) if is_playlist_url(source.url) else source.url
+        result = subprocess.run(command + ["--", target_url], capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=110)
     except subprocess.TimeoutExpired as exc:
         raise ValueError("YouTube не ответил вовремя. Повторите анализ или укажите прокси.") from exc
@@ -140,6 +141,7 @@ def create_app(download_dir: Path | None = None, save_dir: Path | None = None) -
     async def health():
         return dict(version=__version__, ffmpeg=bool(shutil.which("ffmpeg")), ffprobe=bool(shutil.which("ffprobe")),
                     runtimes=list(runtime_options()), download_dir=str(destination), cache_dir=str(root),
+                    features=dict(playlists=True, size_estimates=True),
                     cookies_available=(ROOT / "yt_cookies.txt").is_file())
 
     @app.post("/api/analyze")

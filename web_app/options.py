@@ -5,7 +5,7 @@ import re
 import shutil
 import sys
 from typing import Literal
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -15,6 +15,12 @@ MAX_PLAYLIST_ITEMS = 10000
 
 def is_playlist_url(url: str) -> bool:
     return bool(parse_qs(urlparse(url).query).get("list", [""])[0])
+
+
+def canonical_playlist_url(url: str) -> str:
+    """YouTube and YouTube Music share playlist IDs; use one extractor entry point."""
+    playlist_id = parse_qs(urlparse(url).query).get("list", [""])[0]
+    return "https://www.youtube.com/playlist?" + urlencode({"list": playlist_id})
 
 
 class Source(BaseModel):
@@ -40,6 +46,8 @@ class Source(BaseModel):
                     path == "/watch" and bool(re.fullmatch(r"[\w-]+", parse_qs(parsed.query).get("v", [""])[0]))
                     or bool(re.fullmatch(r"/(?:shorts|live|embed|v|clip)/[\w-]+", path)))
         playlist_id = parse_qs(parsed.query).get("list", [""])[0]
+        if path == "/playlist" and not playlist_id:
+            raise ValueError("В ссылке отсутствует идентификатор после list=. Скопируйте полный адрес плейлиста.")
         is_playlist = path in {"/playlist", "/watch"} and bool(re.fullmatch(r"[\w-]+", playlist_id))
         if playlist_id and not re.fullmatch(r"[\w-]+", playlist_id):
             raise ValueError("Некорректный идентификатор плейлиста.")
